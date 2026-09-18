@@ -1,0 +1,14 @@
+node_modules/
+lib/
+*.log
+*.bak
+*.bak-*
+
+# 第三方素材（模型/动作）绝不入库：版权在原作者，且体积大
+assets/media/
+media/
+
+# 出片产物
+out/
+runs/
+frames/
