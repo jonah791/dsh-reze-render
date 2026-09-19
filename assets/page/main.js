@@ -13,6 +13,7 @@ const START = num("start", 0)
 const MODE = q.get("mode") || "render"
 const MODEL = q.get("model") || "model"
 const PMX = q.get("pmx") || ""
+const STAGE = q.get("stage") || ""
 const VMD = q.get("vmd") || ""
 const DISTANCE = num("distance", 36)
 const ALPHA = num("alpha", 0)
@@ -40,6 +41,18 @@ try {
   const model = await engine.loadModel(MODEL, PMX)
   await engine.autoStyleGroups(MODEL)
   log("model + style groups ok")
+
+  // 舞台/背景：作为**第二个具名槽位**载入（静态，不挂动作）。
+  // 载入失败**不视为致命**——角色照常出片，只是没有背景（fail-soft，且把原因写进日志）。
+  if (STAGE) {
+    try {
+      await engine.loadModel("stage", STAGE)
+      await engine.autoStyleGroups("stage")
+      log("stage loaded: " + STAGE)
+    } catch (e) {
+      log("stage load FAILED（继续出角色）: " + String((e && e.message) || e))
+    }
+  }
 
   if (VMD) {
     await model.loadVmd("motion", VMD)

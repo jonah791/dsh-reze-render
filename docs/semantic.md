@@ -56,8 +56,8 @@
 | 工具 | 意图 | 关键参数 | 返回 |
 |------|------|---------|------|
 | `reze_status` | 这台机器现在能不能出片、手里有哪些料 | — | ready/缺失项/模型清单/动作清单 |
-| `reze_preview` | 出一张（或多张候选）静帧看机位 | model, motion, at, distances[], width, height, alpha, beta, bg | 图片路径 + 尺寸 + 字节数 |
-| `reze_render` | 出一段视频 | model, motion, seconds, fps, width, height, distance, start, bg, outName | 视频路径 + 帧数/时长/分辨率/帧间变化/字节数 |
+| `reze_preview` | 出一张（或多张候选）静帧看机位 | model, **stage**, motion, at, distances[], width, height, alpha, beta, bg | 图片路径 + 尺寸 + 字节数 |
+| `reze_render` | 出一段视频 | model, **stage**, motion, seconds, fps, width, height, distance, start, bg, outName, crf | 视频路径 + 帧数/时长/分辨率/帧间变化/字节数 |
 
 ### 4.2 runner CLI（内部契约，可被测试直接调用）
 
@@ -110,8 +110,13 @@ node assets/runner.mjs render  --spec '<json>'
 | A7 | 帧数据不经过模型上下文 | 工具返回体只有路径 + 读数（约 600 字节 JSON，无 base64） | 已实测 |
 | A8 | 失败路径自清理：进程表里无残留 headless Chrome | 运行后按 `reze-profile/--headless` 过滤 = **0** 个残留 | 已实测 |
 | A9 | 缺资产时**响亮报错**而不是出黑屏 | 传不存在的 model ⇒ `asset-missing · model 不存在：…` | 已实测 |
+| A10 | 传 `stage` 时舞台真的进入画面（不是被静默忽略） | 同机位同模型：无 stage 产物 83,261 B / 有 stage 产物 1,015,705 B（**12.2×**，肉眼见霓虹砖墙+地面）；`pageLog` 记 `stage loaded: …` | 已实测 |
+| A11 | `stage` 载入失败**不致命**（fail-soft，角色照常出片） | 代码路径：`try/catch` 只记 `pageLog`，不抛；不传 `stage` 时行为与增强前**逐字节同构**（A3–A6 回归通过） | 已实测（异常分支待真实坏舞台样本触发） |
+| A12 | 加了 `stage` 后**旧调用不受影响**（向后兼容） | 不传 `stage` ⇒ query 里 `stage=""` ⇒ `if (STAGE)` 为假 ⇒ 与 0.1.0 路径一致；端到端 1080p/12s/360 帧验收通过 | 已实测 |
 
 > 端到端读数（2026-09-18 21:5x，插件挂载后经工具调用）：`reze_status` ready=true · `reze_preview`（sheet 两机位）5.0s · `reze_render` 1280×720 / 3s / 90 帧 → 帧间变化 1.0、产物 257,687 字节、用时 11.3s。
+>
+> 端到端读数（2026-09-19 10:2x，**加 stage 参数后**）：`reze_preview`（model=美鈴 + stage=neon stage，两机位）9.2s · `reze_render` **1920×1080 / 12s / 360 帧 → 5,199,210 字节、用时 318.4s**（有舞台比无舞台慢约 3.5×——几何量上去了）；生效判据：监听 3080 的 PID 47300 启动时间 `10:22:33` **晚于** `lib/index.js` mtime `09:42:59` ✅。
 
 ## 8 · 与实现的关系
 
@@ -119,9 +124,15 @@ node assets/runner.mjs render  --spec '<json>'
 - 编排实现：`assets/runner.mjs`（零外部依赖：node 内置 + 全局 fetch/WebSocket）
 - 出帧页：`assets/page/index.html` + `assets/page/main.js`
 - 引擎 bundle：`assets/engine/reze-engine.js`（`reze-engine@0.56.11` 的 esbuild 打包产物，MIT；**打包命令写在 README**）
-- 未实现/未验证部分**显式标注**：① 4K 出片未实测（只测 1080p）② 声音轨未支持（VMD 无音频；要配乐需另加 ffmpeg 混流）③ 多模型同场未支持
+- 未实现/未验证部分**显式标注**：① 4K 出片未实测（只测 1080p）② 声音轨未支持（VMD 无音频；要配乐需另加 ffmpeg 混流）③ **单舞台**——只支持一个额外的具名槽位 `stage`（多道具/多角色同场仍未支持）
 
 ## 9 · 实践修订记录
+
+- **2026-09-19 实践回修（v0.1.1 · 新增 `stage`）**：出片时发现**库里的舞台资产无从使用**——引擎 `loadModel(name, path)` 本就接受**具名槽位**，但插件只载一个模型，于是 123 个舞台（背景）全是死资产，出片永远是纯色背景。
+  - 语义**被补充**：`stage` = **第二个具名槽位**，静态载入（不挂动作），与角色同场；**载入失败 fail-soft**（照出角色，把原因写进 `pageLog`）——因为「没有背景」远比「没有片子」轻。
+  - 语义**被补充（判据）**：加参数必须**向后兼容**——不传 `stage` 时 query 为空、`if (STAGE)` 为假，路径与 0.1.0 一致（A12）。
+  - 实测代价：有舞台比无舞台**慢约 3.5×**（1080p/12s：318.4s vs 91.3s）——几何量上去了；**这是选件时要预算的**。
+  - 落地闭环：改 `src/index.ts`（两工具 schema + opts 透传）+ `assets/page/main.js`（`loadModel("stage")`）+ `assets/runner.mjs`（query 透传）→ tsc 构建 → ES module 语法自检 → 预检 → 哨兵重启 → **生效判据（进程启动时间 > 产物 mtime）** → 出片验收。
 
 - **2026-09-18 首次实践（v0.1.0）**：从 `E:\alice\scripts\reze-render\` 的临时管线抽象成插件。
   - 语义**被澄清**：临时管线用「URL 查询参数 + 人肉导航」，插件化后必须是「一次调用 → 一份结构化读数」，因此把**判据现算**（ffprobe + framemd5）提为不变量 I2。
@@ -132,3 +143,5 @@ node assets/runner.mjs render  --spec '<json>'
 - **U1** 是否支持「配乐 + 音轨」？（需要额外的音频源与 ffmpeg 混流；VMD 本身无音频）
 - **U2** 是否要把「多机位拼接」（一次调用出多机位并自动剪辑）纳入本插件，还是留给上层编排？
 - **U3** 4K/60fps 的实测量级（本机 Intel iGPU 下 1080p 240 帧约 20 秒；4K 预计 4 倍以上）是否值得做缓存/增量？
+- **U4** 有舞台后 1080p/12s 要 318s（无舞台 91s）⇒ 是否值得加**降采样预览 + 分段增量渲染**，或按「舞台复杂度」先给用户一个耗时估计？
+- **U5** `stage` 只是「一个额外槽位」的临时命名；多道具/多角色同场（真正的 MMD 场景）需要**槽位数组**——是否按 `addModels: [{name, path}]` 泛化？

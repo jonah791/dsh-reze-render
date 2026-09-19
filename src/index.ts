@@ -162,6 +162,7 @@ export function apply(ctx: Context, config: Config): void {
       '传 distances（数组）即一次出多张候选（多机位试片）；返回每张的文件路径与字节数（**不返回像素**，看图用 read_image）。',
     parameters: {
       model: { type: 'string', description: '资产根下的 pmx 相对路径，如 models/reze/reze.pmx', required: true },
+      stage: { type: 'string', description: '舞台/背景（可选）：资产根下的 pmx 相对路径，如 stages/neon stage/neon stage.pmx。作为第二个具名槽位载入（静态无动作）；载入失败不致命，会写进 pageLog' },
       motion: { type: 'string', description: '资产根下的 vmd 相对路径（可选，不给则是静止姿态）' },
       distances: { type: 'array', description: '多机位试片：距离数组，如 [30,40,50]；给了就走 sheet 模式' },
       distance: { type: 'number', description: '单张预览的相机距离（默认 36）' },
@@ -205,6 +206,7 @@ export function apply(ctx: Context, config: Config): void {
       const sheet = Array.isArray(args.distances) && args.distances.length > 0
       const opts = {
         model: args.model,
+        stage: args.stage ?? '',
         motion: args.motion ?? '',
         width: args.width ?? 960,
         height: args.height ?? 540,
@@ -229,6 +231,7 @@ export function apply(ctx: Context, config: Config): void {
       '本机 Intel iGPU 实测 1080p 8 秒片 ≈ 20 秒渲染。产物路径在 video 字段。',
     parameters: {
       model: { type: 'string', description: '资产根下的 pmx 相对路径', required: true },
+      stage: { type: 'string', description: '舞台/背景（可选）：资产根下的 pmx 相对路径；作为第二个具名槽位静态载入，载入失败不致命' },
       motion: { type: 'string', description: '资产根下的 vmd 相对路径（可选）' },
       seconds: { type: 'number', description: '时长（秒，默认 8）' },
       fps: { type: 'number', description: '帧率（默认 30）' },
@@ -291,6 +294,7 @@ export function apply(ctx: Context, config: Config): void {
       const fps = args.fps ?? 30
       const opts = {
         model: args.model,
+        stage: args.stage ?? '',
         motion: args.motion ?? '',
         seconds,
         fps,

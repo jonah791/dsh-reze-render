@@ -235,6 +235,7 @@ async function shoot(mode) {
     const q = new URLSearchParams({
       mode, t: tag,
       model: OPTS.modelName || "model", pmx: "/media/" + model,
+      stage: OPTS.stage ? "/media/" + OPTS.stage : "",
       vmd: motion ? "/media/" + motion : "",
       w: String(width), h: String(height), fps: String(fps),
       seconds: String(OPTS.seconds || 8), warmup: String(OPTS.warmup ?? 45), start: String(OPTS.start || 0),
