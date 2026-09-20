@@ -1,4 +1,4 @@
-﻿{
+{
     "name":  "dsh-reze-render",
     "version":  "0.1.1",
     "description":  "用 reze-engine 离线出 MMD 视频/静帧：资产自检 + 机位试片 + 出片（无头 Chrome WebGPU 逐帧渲染 + ffmpeg 编码 + 判据验收）",
@@ -12,10 +12,11 @@
                           },
                     "./package.json":  "./package.json"
                 },
-    "files":  [
+    "files": [
                   "lib",
-                  "README.md"
-              ],
+                  "README.md",
+                  "dsh-plugin.json"
+    ],
     "license":  "MIT",
     "peerDependencies":  {
                              "@deepseek-ai/cordis":  "^4.0.1",
