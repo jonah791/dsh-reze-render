@@ -243,10 +243,23 @@ async function shoot(mode) {
       bg: (OPTS.bg || "0.09,0.10,0.14"),
       distances: (OPTS.distances || []).join(","),
       alphas: (OPTS.alphas || []).join(","),
+      betas: (OPTS.betas || []).join(","),
+      targetYs: (OPTS.targetYs || []).join(","),
       camDist: String(OPTS.camDist || ""), camAlpha: String(OPTS.camAlpha || ""), camBeta: String(OPTS.camBeta || ""),
       camVmd: String(OPTS.camVmd || ""),
       camTargetBone: String(OPTS.camTargetBone || ""),
       camTargetY: OPTS.camTargetY !== undefined ? String(OPTS.camTargetY) : "",
+      camTargetX: OPTS.camTargetX !== undefined ? String(OPTS.camTargetX) : "",
+      camTargetZ: OPTS.camTargetZ !== undefined ? String(OPTS.camTargetZ) : "",
+      camEvery: OPTS.camEvery !== undefined ? String(OPTS.camEvery) : "",
+      // 第二角色（多角色同台）
+      model2: OPTS.model2 ? "/media/" + OPTS.model2 : "",
+      vmd2: OPTS.motion2 ? "/media/" + OPTS.motion2 : "",
+      model2x: OPTS.model2x !== undefined ? String(OPTS.model2x) : "",
+      model2y: OPTS.model2y !== undefined ? String(OPTS.model2y) : "",
+      model2z: OPTS.model2z !== undefined ? String(OPTS.model2z) : "",
+      model2ry: OPTS.model2ry !== undefined ? String(OPTS.model2ry) : "",
+      model2scale: OPTS.model2scale !== undefined ? String(OPTS.model2scale) : "",
     })
     const pageUrl = `http://127.0.0.1:${srv.port}/?${q.toString()}`
     const target = await newTarget(cdpPort, pageUrl)

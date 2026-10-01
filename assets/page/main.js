@@ -1,6 +1,6 @@
 // reze 出帧页（由 runner 通过 CDP 导航并轮询 window.__reze）
 // 参数全部走 URL；帧用 canvas.toBlob → POST /frame 落盘（**不经过任何会话上下文**）
-import { Engine } from "/reze-engine.js"
+import { Engine, Vec3, Quat } from "/reze-engine.js"
 
 const q = new URLSearchParams(location.search)
 const num = (k, d) => (q.get(k) !== null && q.get(k) !== "" ? Number(q.get(k)) : d)
@@ -15,6 +15,16 @@ const MODEL = q.get("model") || "model"
 const PMX = q.get("pmx") || ""
 const STAGE = q.get("stage") || ""
 const VMD = q.get("vmd") || ""
+// ★ 多角色同台（2026-10-01 新增）：第二具名槽位 "model2"。
+//   引擎的模型是**具名实例**（loadModel(name, path)），名字冲突会自动加后缀 _1，
+//   所以两个角色、外加 stage，三个槽位互不干扰。位置用根变换（setPosition）错开。
+const MODEL2 = q.get("model2") || ""
+const VMD2_RAW = q.get("vmd2") || "" // 缺省 = 与主角色同动作（群舞摆法）
+const M2X = num("model2x", 0)
+const M2Y = num("model2y", 0)
+const M2Z = num("model2z", 0)
+const M2RY = num("model2ry", 0) // 绕 Y 旋转（度）：让两人相对而立
+const M2SCALE = num("model2scale", 1) // 不同模型身高差可直接观察；需要修正时用这个
 // ★★ 单位（2026-10-01 实测确认）：引擎相机角一律**弧度** —— 见 Camera.getPosition()
 //     x = target.x + radius*sin(beta)*sin(alpha) · y = target.y + radius*cos(beta)
 //     ⇒ beta 是俯仰角：beta=0 ⇒ y=target.y+radius（**正上方**，且 alpha 完全失效 ⇒ 画面钉死）
@@ -27,6 +37,10 @@ const BETA = num("beta", 0) * D2R
 const BG = (q.get("bg") || "0.09,0.10,0.14").split(",").map(Number).slice(0, 3)
 const DISTANCES = (q.get("distances") || "").split(",").filter(Boolean).map(Number)
 const ALPHAS = (q.get("alphas") || "").split(",").filter(Boolean).map((v) => Number(v) * D2R)
+// 构图三轴扫描（2026-10-01 扩展）：alpha=环绕角 · beta=俯仰（直接决定画面下部地面占比）
+//   · targetY=相机注视高度。三者独立，可分别扫。
+const BETAS = (q.get("betas") || "").split(",").filter(Boolean).map((v) => Number(v) * D2R)
+const TARGET_YS = (q.get("targetYs") || "").split(",").filter(Boolean).map(Number)
 
 // ── 相机关键帧（2026-10-01 爱丽丝新增）：让镜头动起来（推拉摇移）──────────────
 // 三个轴各自独立，格式 "t:v,t:v" （t=秒, v=目标值）：
@@ -103,12 +117,39 @@ try {
     model.play("motion")
     log("motion loaded")
   }
+
+  // ★ 第二角色（2026-10-01 新增）：各角色挂各自的 VMD —— 引擎只有**一个场景时钟**
+  //   （renderFrame(dt) 推进全部），所以两支动作天然同拍，不需要手动对齐。
+  //   根变换（setPosition / setRotation）与 VMD 的「センター」骨骼位移是**两套**：
+  //   前者是模型根矩阵，后者是骨骼动画 ⇒ 可叠加，不会互相打架。
+  let model2 = null
+  if (MODEL2) {
+    try {
+      model2 = await engine.loadModel("model2", MODEL2)
+      await engine.autoStyleGroups("model2")
+      model2.setPosition(new Vec3(M2X, M2Y, M2Z))
+      if (M2RY) model2.setRotation(Quat.fromAxisAngle(new Vec3(0, 1, 0), M2RY * D2R))
+      if (M2SCALE !== 1) model2.setScale(M2SCALE)
+      const v2 = VMD2_RAW || VMD
+      if (v2) {
+        await model2.loadVmd("motion", v2)
+        model2.show("motion")
+        model2.play("motion")
+      }
+      log(`model2 ok: ${MODEL2} @(${M2X},${M2Y},${M2Z}) ry=${M2RY} vmd=${v2 || "(none)"}`)
+    } catch (e) {
+      model2 = null
+      log("model2 load FAILED（降级为单角色）: " + String((e && e.message) || e))
+    }
+  }
   // ★ 相机目标（2026-10-01）：治「画面下半是空地面」。
   //   引擎 setCameraTarget 有两种重载（**传 {x,y,z} 对象** 才是静态点；传数组会被 duck-typing
   //   当成 Model 重载而崩）：① `camTargetBone=<骨骼名>` ⇒ 相机**跟随该骨骼**（自动居中）
   //   ② `camTargetY=<高度>` ⇒ 静态目标点 (0, y, 0)。默认骨骼名是「全ての親」。
   const CAM_TARGET_BONE = q.get("camTargetBone") || ""
   const CAM_TARGET_Y = num("camTargetY", NaN)
+  const CAM_TARGET_X = num("camTargetX", 0) // 双人同台时取两人中点
+  const CAM_TARGET_Z = num("camTargetZ", 0)
   if (CAM_TARGET_BONE) {
     try {
       engine.setCameraTarget(model, CAM_TARGET_BONE)
@@ -118,8 +159,8 @@ try {
     }
   } else if (!Number.isNaN(CAM_TARGET_Y)) {
     try {
-      engine.setCameraTarget({ x: 0, y: CAM_TARGET_Y, z: 0 })
-      log("camera target y=" + CAM_TARGET_Y)
+      engine.setCameraTarget({ x: CAM_TARGET_X, y: CAM_TARGET_Y, z: CAM_TARGET_Z })
+      log(`camera target (${CAM_TARGET_X},${CAM_TARGET_Y},${CAM_TARGET_Z})`)
     } catch (e) {
       log("camera target y FAILED: " + String((e && e.message) || e))
     }
@@ -173,7 +214,8 @@ try {
   } else if (MODE === "sheet") {
     // 2026-10-01 扩展：除 distances 外，还可扫 alpha（alphas）—— 用于**先找"好看区"再设计动画**。
     // 教训来源：盲设相机动线两版都只有 1 帧好看，且好看的那帧还不在同一处。
-    const ds = DISTANCES.length ? DISTANCES : (ALPHAS.length ? [] : [30, 40, 50])
+    const anySweep = DISTANCES.length || ALPHAS.length || BETAS.length || TARGET_YS.length
+    const ds = DISTANCES.length ? DISTANCES : (anySweep ? [] : [30, 40, 50])
     for (const d of ds) {
       engine.setCameraDistance(d)
       for (let i = 0; i < 12; i++) engine.renderFrame(dt)   // 等相机插值收敛
@@ -188,6 +230,24 @@ try {
       await shot(`preview-a${a}.png`)
       S.frames++
       log("sheet alpha=" + a)
+    }
+    // beta 扫描：俯仰角直接决定画面下部地面占比（beta→90° 相机与目标同高，地面最少）
+    for (const b of BETAS) {
+      if (DISTANCE) engine.setCameraDistance(DISTANCE)
+      engine.setCameraBeta(b)
+      for (let i = 0; i < 12; i++) engine.renderFrame(dt)
+      await shot(`preview-b${b}.png`)
+      S.frames++
+      log("sheet beta=" + b)
+    }
+    // targetY 扫描：抬高注视点 ⇒ 画面内容下移 ⇒ 角色回到画面中央（治「脚下大片空地面」）
+    for (const y of TARGET_YS) {
+      if (DISTANCE) engine.setCameraDistance(DISTANCE)
+      engine.setCameraTarget({ x: CAM_TARGET_X, y, z: CAM_TARGET_Z })
+      for (let i = 0; i < 12; i++) engine.renderFrame(dt)
+      await shot(`preview-y${y}.png`)
+      S.frames++
+      log("sheet targetY=" + y)
     }
   } else {
     for (let i = 0; i < S.total; i++) {
