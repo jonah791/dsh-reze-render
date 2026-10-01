@@ -242,6 +242,11 @@ async function shoot(mode) {
       distance: String(OPTS.distance ?? 36), alpha: String(OPTS.alpha ?? 0), beta: String(OPTS.beta ?? 0),
       bg: (OPTS.bg || "0.09,0.10,0.14"),
       distances: (OPTS.distances || []).join(","),
+      alphas: (OPTS.alphas || []).join(","),
+      camDist: String(OPTS.camDist || ""), camAlpha: String(OPTS.camAlpha || ""), camBeta: String(OPTS.camBeta || ""),
+      camVmd: String(OPTS.camVmd || ""),
+      camTargetBone: String(OPTS.camTargetBone || ""),
+      camTargetY: OPTS.camTargetY !== undefined ? String(OPTS.camTargetY) : "",
     })
     const pageUrl = `http://127.0.0.1:${srv.port}/?${q.toString()}`
     const target = await newTarget(cdpPort, pageUrl)
