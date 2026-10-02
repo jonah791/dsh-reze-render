@@ -227,21 +227,60 @@ export function apply(ctx: Context, config: Config): void {
     name: 'reze_render',
     description:
       '出 MMD 视频：reze-engine 在无头浏览器里按固定步长逐帧渲染（确定性离线导出），ffmpeg 编码，' +
-      '返回**现算的判据读数**：帧数/期望帧数/分辨率/时长/编码/字节数/帧间变化（framemd5 去重比值，=1 表示画面静止）。' +
-      '本机 Intel iGPU 实测 1080p 8 秒片 ≈ 20 秒渲染。产物路径在 video 字段。',
+      '返回**现算的判据读数**：帧数/期望帧数/分辨率/时长/编码/字节数/去重帧数。' +
+      '⚠ **`frameVariety` 的「1」含义是「每帧都不同」**（去重帧/总帧），**不是**「画面静止」——以 `distinctFrames` 为准。' +
+      '支持多角色同台（extras）、相机关键帧（camDist/camAlpha/camBeta）、后处理（postfx）。' +
+      '⚠ 舞台之间尺度差异极大（宽 24～86888），**换舞台必须重扫机位**——先用 reze_preview 扫。',
     parameters: {
       model: { type: 'string', description: '资产根下的 pmx 相对路径', required: true },
       stage: { type: 'string', description: '舞台/背景（可选）：资产根下的 pmx 相对路径；作为第二个具名槽位静态载入，载入失败不致命' },
+      stage2: { type: 'string', description: '第二舞台（可选）：通常是与 stage 配套的 sky/天空盒（動く荒野sky / 動く海用sky / SkyBox_* 等）——户外舞台给了它背景才不空' },
       motion: { type: 'string', description: '资产根下的 vmd 相对路径（可选）' },
       seconds: { type: 'number', description: '时长（秒，默认 8）' },
       fps: { type: 'number', description: '帧率（默认 30）' },
       width: { type: 'number', description: '宽（默认 1920）' },
       height: { type: 'number', description: '高（默认 1080）' },
       distance: { type: 'number', description: '相机距离（默认 36；先用 reze_preview 定）' },
+      alpha: { type: 'number', description: '水平环绕角（度，默认 180=舞台正面）。每个舞台有自己的「好看区」，换舞台要重扫' },
+      beta: { type: 'number', description: '俯仰角（度）。90=相机与目标同高；越大相机越低、画面下部地面越少。⚠ beta>90 时若目标点太低，相机会钻到地板下 ⇒ 整帧全黑（安全线 targetY > r·|cos(beta)|）' },
       start: { type: 'number', description: '从动作第几秒切入（默认 0）' },
       bg: { type: 'string', description: '背景色 sRGB 0-1（默认 0.09,0.10,0.14）' },
       crf: { type: 'number', description: 'x264 质量（默认 18，越小越清）' },
       outName: { type: 'string', description: '产物文件名（不含扩展名）' },
+      // ── 相机动线（让镜头动起来：推拉摇移）────────────────────────────────
+      camDist: { type: 'string', description: '距离关键帧，如 "0:41,4:34,8:40"（t秒:值；smoothstep 插值）' },
+      camAlpha: { type: 'string', description: '环绕角关键帧（度），如 "0:203,4:188,8:199"' },
+      camBeta: { type: 'string', description: '俯仰角关键帧（度），如 "0:99,4:93,8:100"' },
+      // ── 构图锚点 ────────────────────────────────────────────────────────
+      camTargetBone: { type: 'string', description: '相机跟随的骨骼名（如 上半身）——治「角色出框 / 画面下半是空地面」' },
+      camTargetX: { type: 'number', description: '静态目标点 X（多角色同台时取各人站位的中点；camTargetBone 只能跟一个模型）' },
+      camTargetY: { type: 'number', description: '静态目标点 Y（角色约高 19～21 单位；h 40～80 的舞台设 20 左右实测吻合）' },
+      camTargetZ: { type: 'number', description: '静态目标点 Z' },
+      camVmd: { type: 'string', description: '专业相机 VMD 路径（作者配好的镜头）。⚠ 与作者原环境（同舞台同模型）不匹配时会失配（实测两包都失配：一包差 136 帧、一包是环境失配）' },
+      // ── 多角色同台 ──────────────────────────────────────────────────────
+      extras: {
+        type: 'array',
+        description: '多角色同台（N 人）：[{pmx, vmd?, x?, y?, z?, ry?, scale?}, …]。' +
+          '引擎只有一个场景时钟 ⇒ 各路 VMD **天然同拍**；根变换与 VMD 骨骼位移可叠加。' +
+          '主模型用 modelX/modelY/modelZ/modelRy/modelScale 布位（否则钉在原点）。' +
+          '实测 9 人同台（前排 5 间距 15 + 后排 4 z=18 交错）1080p/16s 正常出片。',
+      },
+      modelX: { type: 'number', description: '主模型 X 位移（阵列布位用）' },
+      modelY: { type: 'number', description: '主模型 Y 位移' },
+      modelZ: { type: 'number', description: '主模型 Z 位移' },
+      modelRy: { type: 'number', description: '主模型绕 Y 旋转（度）' },
+      // ── 后处理 / 光照 ───────────────────────────────────────────────────
+      postfx: {
+        type: 'object',
+        additionalProperties: true,
+        description: '后处理/光照补丁（**部分合并**语义：只写想改的键，其余保持原值）。' +
+          '可用键：bloom{intensity,threshold,radius,knee} · exposure · gamma · transform · saturation · contrast · ' +
+          'dof{enabled,focusMode,aperture,maxBlurRadius} · filmGrain · sun{strength,direction} · world · lights · ' +
+          'groundMirror{on,blur} · outline · groundVisible · cameraFov · cameraRoll · background。' +
+          '⚠ 引擎默认极保守：bloom.intensity 只有 0.05、dof 关着、filmGrain 0、exposure 0.6。' +
+          '实测配方 bloom{intensity:0.95,threshold:0.34,radius:6} + exposure 0.88 + saturation 1.28 + contrast 1.08 + dof{aperture:2.2} ⇒ 画面从「平」变「发光」。',
+      },
+      probe: { type: 'boolean', description: '诊断：把引擎后处理/光照的当前值（含默认值）打进 pageLog——调 getter 让引擎自报，不用读源码猜参数形状' },
     },
     output: {
       schema: {
@@ -268,14 +307,18 @@ export function apply(ctx: Context, config: Config): void {
           detail: { type: 'string' },
           framesOnDisk: { type: 'number' },
           pageLog: { type: 'json' },
+          diagnostics: { type: 'json' },
         },
       },
       render: (_a: unknown, v: any) => {
         if (v.ok !== true) {
           const pages = Array.isArray(v.pageLog) && v.pageLog.length ? `\n页面日志：${(v.pageLog as string[]).join(' | ')}` : ''
+          const diag = Array.isArray(v.diagnostics) && v.diagnostics.length
+            ? `\n页面侧诊断（CDP 异常/错误日志）：${(v.diagnostics as string[]).join(' | ')}`
+            : ''
           return [{
             type: 'text',
-            text: `出片失败：${failText(v)}${v.framesOnDisk !== undefined ? `（已落盘 ${String(v.framesOnDisk)} 帧）` : ''}${pages}`,
+            text: `出片失败：${failText(v)}${v.framesOnDisk !== undefined ? `（已落盘 ${String(v.framesOnDisk)} 帧）` : ''}${diag}${pages}`,
           }]
         }
         const mb = (Number(v.bytes) / 1e6).toFixed(2)
@@ -306,6 +349,27 @@ export function apply(ctx: Context, config: Config): void {
         crf: args.crf ?? 18,
         outName: args.outName ?? 'reze-mmd',
         warmup: 45,
+        // 相机动线 / 构图锚点 / 专业相机
+        alpha: args.alpha,
+        beta: args.beta,
+        camDist: args.camDist,
+        camAlpha: args.camAlpha,
+        camBeta: args.camBeta,
+        camTargetBone: args.camTargetBone,
+        camTargetX: args.camTargetX,
+        camTargetY: args.camTargetY,
+        camTargetZ: args.camTargetZ,
+        camVmd: args.camVmd,
+        // 多角色同台
+        extras: args.extras,
+        modelX: args.modelX,
+        modelY: args.modelY,
+        modelZ: args.modelZ,
+        modelRy: args.modelRy,
+        // 后处理 / 光照 / 诊断
+        stage2: args.stage2,
+        postfx: args.postfx,
+        probe: args.probe,
       }
       return await runRunner(ctx, 'render', opts, config, Math.max(180_000, seconds * fps * 3000))
     },
