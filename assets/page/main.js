@@ -14,6 +14,10 @@ const MODE = q.get("mode") || "render"
 const MODEL = q.get("model") || "model"
 const PMX = q.get("pmx") || ""
 const STAGE = q.get("stage") || ""
+// 第二舞台槽位（2026-10-01）：普查发现 13 个户外舞台必须「地形 + sky」配套
+//   （動く荒野 + 動く荒野sky / 動く海 + 動く海用sky / 自動高速道路 + sky / IceCreamTruck + SkyBox_*…）
+//   单槽位时这些舞台背景是空的 ⇒ 补一个 stage2。
+const STAGE2 = q.get("stage2") || ""
 const VMD = q.get("vmd") || ""
 // ★ 多角色同台（2026-10-01 新增）：第二具名槽位 "model2"。
 //   引擎的模型是**具名实例**（loadModel(name, path)），名字冲突会自动加后缀 _1，
@@ -25,6 +29,12 @@ const M2Y = num("model2y", 0)
 const M2Z = num("model2z", 0)
 const M2RY = num("model2ry", 0) // 绕 Y 旋转（度）：让两人相对而立
 const M2SCALE = num("model2scale", 1) // 不同模型身高差可直接观察；需要修正时用这个
+// 主模型的根变换（2026-10-01）：让阵列布位对称——否则主模型永远钉在原点。
+const M1X = num("modelX", 0)
+const M1Y = num("modelY", 0)
+const M1Z = num("modelZ", 0)
+const M1RY = num("modelRy", 0)
+const M1SCALE = num("modelScale", 1)
 // ★★ 单位（2026-10-01 实测确认）：引擎相机角一律**弧度** —— 见 Camera.getPosition()
 //     x = target.x + radius*sin(beta)*sin(alpha) · y = target.y + radius*cos(beta)
 //     ⇒ beta 是俯仰角：beta=0 ⇒ y=target.y+radius（**正上方**，且 alpha 完全失效 ⇒ 画面钉死）
@@ -90,24 +100,157 @@ const S = (window.__reze = {
 const post = (p, body) => fetch(p, { method: "POST", body }).catch(() => {})
 const log = (m) => { S.log.push(m); console.log("[reze] " + m); post("/log", m) }
 
+// 模型/舞台的**包围盒自证**（2026-10-01）：换舞台要重扫机位，但「这舞台多大」不该靠肉眼试。
+//   顶点布局（引擎 mainPipeline 的 vertexBufferLayout）：arrayStride = 8 float，
+//   位置 float32x3 在 offset 0 ⇒ 每 8 个 float 一个顶点，前 3 个是 x,y,z（模型空间绑定位）。
+//   舞台无蒙皮 ⇒ 绑定位即实际尺寸；角色是绑定姿势尺寸（够用）。
+const bbox = (m) => {
+  try {
+    const v = m.getVertices()
+    if (!v || !v.length) return null
+    let mnx = Infinity, mxx = -Infinity, mny = Infinity, mxy = -Infinity, mnz = Infinity, mxz = -Infinity
+    for (let i = 0; i + 2 < v.length; i += 8) {
+      const x = v[i], y = v[i + 1], z = v[i + 2]
+      if (x < mnx) mnx = x; if (x > mxx) mxx = x
+      if (y < mny) mny = y; if (y > mxy) mxy = y
+      if (z < mnz) mnz = z; if (z > mxz) mxz = z
+    }
+    if (!isFinite(mnx)) return null
+    const f = (n) => Math.round(n * 100) / 100
+    return `w=${f(mxx - mnx)} h=${f(mxy - mny)} d=${f(mxz - mnz)} minY=${f(mny)} maxY=${f(mxy)}`
+  } catch (e) {
+    return null
+  }
+}
+const logBox = (what, m) => {
+  const b = bbox(m)
+  if (b) log(`bbox ${what}: ${b}`)
+}
+
+// ★ 后处理/光照探查（2026-10-02）：**不读源码猜参数形状——让引擎自己报默认值**。
+//   URL 加 probe=1 ⇒ 把各 getter 的结果打进日志。形状确定后再用 postfx 施加补丁。
+//   引擎公开面（实测导出）：setBloomOptions / setColorGrading / setViewTransformOptions /
+//   setDepthOfField / setFilmGrain / setWorld / setSun / setLights / setGroundMirror /
+//   setWorldEquirect(HDR) / setBackdropEquirect / setGroundVisible…
+const PROBE = q.get("probe") === "1"
+const probe = (name, fn) => {
+  try {
+    const v = fn()
+    if (v === undefined) return log(`probe ${name}: undefined`)
+    const s = JSON.stringify(v)
+    log(`probe ${name}: ${s && s.length > 950 ? s.slice(0, 950) + "…" : s}`)
+  } catch (e) {
+    log(`probe ${name} FAILED: ` + String((e && e.message) || e))
+  }
+}
+
+// ★ 后处理/光照补丁（2026-10-02）：形状由 probe 实测得到（**不猜**）。
+//   URL postfx = JSON，键即开关；缺的键不动。引擎默认值极保守——
+//   bloom.intensity 只有 0.05（泛光几乎关着）· dof.enabled=false · filmGrain=0 · exposure=0.6。
+//   施加后**回读自证**（setXxx 是 patch 语义还是整体替换，靠回读裁决，不靠假设）。
+const POSTFX = (() => {
+  try {
+    const raw = q.get("postfx")
+    const o = raw ? JSON.parse(raw) : {}
+    return o && typeof o === "object" ? o : {}
+  } catch (e) {
+    log("postfx JSON 解析失败（忽略）: " + String((e && e.message) || e))
+    return {}
+  }
+})()
+const POSTFX_ON = Object.keys(POSTFX).length > 0
+
 try {
   const engine = new Engine(canvas, { background: BG })
   await engine.init()
   log(`init ok ${W}x${H}`)
 
+  if (PROBE) {
+    probe("bloom", () => engine.getBloomOptions())
+    probe("grading", () => engine.getColorGrading())
+    probe("viewTransform", () => engine.getViewTransformOptions())
+    probe("dof", () => engine.getDepthOfField())
+    probe("world", () => engine.getWorld())
+    probe("sun", () => engine.getSun())
+    probe("worldLighting", () => engine.getWorldLighting())
+    probe("lightCount", () => engine.getLightCount())
+    probe("filmGrain", () => engine.getFilmGrain())
+    probe("bodyFocus", () => engine.getModelBodyFocus?.())
+    probe("cameraFov", () => engine.getCameraFov())
+    probe("stats", () => engine.getStats())
+  }
+
+  // 施加后处理/光照补丁；每一步独立 try（一个键失败不影响其余），并回读自证
+  if (POSTFX_ON) {
+    const step = (name, fn) => {
+      try { fn(); log(`postfx ${name}: applied`) }
+      catch (e) { log(`postfx ${name} FAILED: ` + String((e && e.message) || e)) }
+    }
+    if (POSTFX.bloom) step("bloom", () => engine.setBloomOptions(POSTFX.bloom))
+    if (POSTFX.grading) step("grading", () => engine.setColorGrading(POSTFX.grading))
+    if (POSTFX.contrast !== undefined || POSTFX.saturation !== undefined) {
+      step("contrast/saturation", () => engine.setColorGrading({
+        ...(POSTFX.contrast !== undefined ? { contrast: POSTFX.contrast } : {}),
+        ...(POSTFX.saturation !== undefined ? { saturation: POSTFX.saturation } : {}),
+      }))
+    }
+    if (POSTFX.exposure !== undefined || POSTFX.gamma !== undefined || POSTFX.transform) {
+      step("viewTransform", () => engine.setViewTransformOptions({
+        ...(POSTFX.exposure !== undefined ? { exposure: POSTFX.exposure } : {}),
+        ...(POSTFX.gamma !== undefined ? { gamma: POSTFX.gamma } : {}),
+        ...(POSTFX.transform ? { transform: POSTFX.transform } : {}),
+      }))
+    }
+    if (POSTFX.dof) step("dof", () => engine.setDepthOfField(POSTFX.dof))
+    if (POSTFX.sun) step("sun", () => engine.setSun(POSTFX.sun))
+    if (POSTFX.world) step("world", () => engine.setWorld(POSTFX.world))
+    if (POSTFX.lights) step("lights", () => engine.setLights(POSTFX.lights))
+    if (POSTFX.filmGrain !== undefined) step("filmGrain", () => engine.setFilmGrain(POSTFX.filmGrain))
+    if (POSTFX.groundMirror) step("groundMirror", () => engine.setGroundMirror(!!POSTFX.groundMirror.on, POSTFX.groundMirror.blur))
+    if (POSTFX.outline !== undefined) step("outline", () => engine.setOutlineEnabled(!!POSTFX.outline))
+    if (POSTFX.groundVisible !== undefined) step("groundVisible", () => engine.setGroundVisible(!!POSTFX.groundVisible))
+    if (POSTFX.cameraFov !== undefined) step("cameraFov", () => engine.setCameraFov(POSTFX.cameraFov))
+    if (POSTFX.cameraRoll !== undefined) step("cameraRoll", () => engine.setCameraRoll(POSTFX.cameraRoll))
+    if (POSTFX.background) step("background", () => engine.setBackgroundColor(POSTFX.background))
+
+    // 回读自证：patch 语义 vs 整体替换，靠读数裁决
+    log("postfx readback bloom: " + JSON.stringify(engine.getBloomOptions()))
+    log("postfx readback grading: " + JSON.stringify(engine.getColorGrading()))
+    log("postfx readback viewTransform: " + JSON.stringify(engine.getViewTransformOptions()))
+    log("postfx readback dof: " + JSON.stringify(engine.getDepthOfField()))
+  }
+
   const model = await engine.loadModel(MODEL, PMX)
   await engine.autoStyleGroups(MODEL)
+  // 主模型的根变换（与 extras 对称）：让阵列里任何一个人都能放到任意位置
+  model.setPosition(new Vec3(M1X, M1Y, M1Z))
+  if (M1RY) model.setRotation(Quat.fromAxisAngle(new Vec3(0, 1, 0), M1RY * D2R))
+  if (M1SCALE !== 1) model.setScale(M1SCALE)
   log("model + style groups ok")
+  logBox("model", model)
 
   // 舞台/背景：作为**第二个具名槽位**载入（静态，不挂动作）。
   // 载入失败**不视为致命**——角色照常出片，只是没有背景（fail-soft，且把原因写进日志）。
   if (STAGE) {
     try {
-      await engine.loadModel("stage", STAGE)
+      const stageModel = await engine.loadModel("stage", STAGE)
       await engine.autoStyleGroups("stage")
       log("stage loaded: " + STAGE)
+      logBox("stage", stageModel)
     } catch (e) {
       log("stage load FAILED（继续出角色）: " + String((e && e.message) || e))
+    }
+  }
+
+  // 第二舞台（通常是配套的 sky / 天空盒）。失败同样不致命。
+  if (STAGE2) {
+    try {
+      const stage2Model = await engine.loadModel("stage2", STAGE2)
+      await engine.autoStyleGroups("stage2")
+      log("stage2 loaded: " + STAGE2)
+      logBox("stage2", stage2Model)
+    } catch (e) {
+      log("stage2 load FAILED（继续）: " + String((e && e.message) || e))
     }
   }
 
@@ -118,30 +261,50 @@ try {
     log("motion loaded")
   }
 
-  // ★ 第二角色（2026-10-01 新增）：各角色挂各自的 VMD —— 引擎只有**一个场景时钟**
-  //   （renderFrame(dt) 推进全部），所以两支动作天然同拍，不需要手动对齐。
-  //   根变换（setPosition / setRotation）与 VMD 的「センター」骨骼位移是**两套**：
-  //   前者是模型根矩阵，后者是骨骼动画 ⇒ 可叠加，不会互相打架。
-  let model2 = null
+  // ★ 附加角色（多角色同台，2026-10-01）：`model2` 是单数简写，`extras` 是通用数组。
+  //   引擎只有一个场景时钟（renderFrame(dt) 推进全部）⇒ 各路 VMD **天然同拍**，不需要对齐帧。
+  //   根变换（setPosition/setRotation/setScale）与 VMD 的「センター」骨骼位移是**两套**，
+  //   可叠加不打架。
+  //   extras 走 URL JSON：[{"pmx":"models/…","vmd":"…","x":-16,"ry":0,"scale":1}, …]
+  let EXTRAS = []
+  try {
+    const raw = q.get("extras")
+    if (raw) EXTRAS = JSON.parse(raw)
+    if (!Array.isArray(EXTRAS)) EXTRAS = []
+  } catch (e) {
+    EXTRAS = []
+    log("extras JSON 解析失败（按无附加角色继续）: " + String((e && e.message) || e))
+  }
+  const cast = []
   if (MODEL2) {
+    cast.push({ slot: "model2", pmx: MODEL2, vmd: VMD2_RAW, x: M2X, y: M2Y, z: M2Z, ry: M2RY, scale: M2SCALE })
+  }
+  EXTRAS.forEach((e, i) => cast.push({
+    slot: "model" + (MODEL2 ? 3 + i : 2 + i),
+    pmx: e.pmx, vmd: e.vmd || "",
+    x: e.x || 0, y: e.y || 0, z: e.z || 0, ry: e.ry || 0, scale: e.scale || 1,
+  }))
+  const castOk = []
+  for (const c of cast) {
     try {
-      model2 = await engine.loadModel("model2", MODEL2)
-      await engine.autoStyleGroups("model2")
-      model2.setPosition(new Vec3(M2X, M2Y, M2Z))
-      if (M2RY) model2.setRotation(Quat.fromAxisAngle(new Vec3(0, 1, 0), M2RY * D2R))
-      if (M2SCALE !== 1) model2.setScale(M2SCALE)
-      const v2 = VMD2_RAW || VMD
-      if (v2) {
-        await model2.loadVmd("motion", v2)
-        model2.show("motion")
-        model2.play("motion")
+      const m = await engine.loadModel(c.slot, c.pmx)
+      await engine.autoStyleGroups(c.slot)
+      m.setPosition(new Vec3(c.x, c.y, c.z))
+      if (c.ry) m.setRotation(Quat.fromAxisAngle(new Vec3(0, 1, 0), c.ry * D2R))
+      if (c.scale !== 1) m.setScale(c.scale)
+      const cv = c.vmd || VMD
+      if (cv) {
+        await m.loadVmd("motion", cv)
+        m.show("motion")
+        m.play("motion")
       }
-      log(`model2 ok: ${MODEL2} @(${M2X},${M2Y},${M2Z}) ry=${M2RY} vmd=${v2 || "(none)"}`)
+      castOk.push(c.slot)
+      log(`${c.slot} ok: ${c.pmx} @(${c.x},${c.y},${c.z}) ry=${c.ry} scale=${c.scale} vmd=${cv || "(none)"}`)
     } catch (e) {
-      model2 = null
-      log("model2 load FAILED（降级为单角色）: " + String((e && e.message) || e))
+      log(`${c.slot} FAILED（跳过该角色，其余照常出片）: ` + String((e && e.message) || e))
     }
   }
+  if (cast.length) log(`cast: ${castOk.length}/${cast.length} loaded [${castOk.join(",")}]`)
   // ★ 相机目标（2026-10-01）：治「画面下半是空地面」。
   //   引擎 setCameraTarget 有两种重载（**传 {x,y,z} 对象** 才是静态点；传数组会被 duck-typing
   //   当成 Model 重载而崩）：① `camTargetBone=<骨骼名>` ⇒ 相机**跟随该骨骼**（自动居中）

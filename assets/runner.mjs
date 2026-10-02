@@ -120,7 +120,7 @@ function startServer({ framesDir, assetRoot }) {
             return send(200, "text/plain", "ok")
           }
           if (req.method === "POST" && url.pathname === "/done") { state.done = true; log("page DONE " + (await readBody()).toString().slice(0, 200)); return send(200, "text/plain", "ok") }
-          if (req.method === "POST" && url.pathname === "/log") { state.log.push((await readBody()).toString().slice(0, 300)); return send(200, "text/plain", "ok") }
+          if (req.method === "POST" && url.pathname === "/log") { state.log.push((await readBody()).toString().slice(0, 1200)); return send(200, "text/plain", "ok") }
           if (req.method === "POST" && url.pathname === "/error") { state.errors.push((await readBody()).toString().slice(0, 1500)); return send(200, "text/plain", "ok") }
           if (url.pathname === "/status") return send(200, "application/json", JSON.stringify(state))
 
@@ -170,16 +170,53 @@ function connect(wsUrl) {
     const ws = new WebSocket(wsUrl)
     let id = 0
     const pending = new Map()
-    ws.addEventListener("open", () => res({
-      evaluate: (expression, awaitPromise = true) => new Promise((ok, no) => {
-        const mid = ++id
-        pending.set(mid, { ok, no })
-        ws.send(JSON.stringify({ id: mid, method: "Runtime.evaluate", params: { expression, awaitPromise, returnByValue: true } }))
-      }),
-      close: () => ws.close(),
-    }))
+    // 页面侧诊断（2026-10-02 事故驱动）：main.js 有语法错误时模块不执行 ⇒ window.__reze 永不出现，
+    // 而 evaluate 的 Promise 只在收到回包时落定 ⇒ **页面坏了会让 runner 死等到超时**（白等 6 分钟）。
+    // 两条修法：① evaluate 自带超时；② 采集 CDP 的异常/控制台事件，失败时把真因带出来。
+    const diagnostics = []
+    ws.addEventListener("open", () => {
+      try {
+        ws.send(JSON.stringify({ id: ++id, method: "Runtime.enable" }))
+        ws.send(JSON.stringify({ id: ++id, method: "Log.enable" }))
+      } catch { /* ignore */ }
+      res({
+        evaluate: (expression, awaitPromise = true, timeoutMs = 15000) => new Promise((ok, no) => {
+          const mid = ++id
+          const timer = setTimeout(() => {
+            pending.delete(mid)
+            no(new Error(`evaluate 超时 ${timeoutMs}ms（页面无响应）`))
+          }, timeoutMs)
+          pending.set(mid, {
+            ok: (v) => { clearTimeout(timer); ok(v) },
+            no: (e) => { clearTimeout(timer); no(e) },
+          })
+          ws.send(JSON.stringify({ id: mid, method: "Runtime.evaluate", params: { expression, awaitPromise, returnByValue: true } }))
+        }),
+        diagnostics: () => diagnostics.slice(-8),
+        close: () => ws.close(),
+      })
+    })
     ws.addEventListener("message", (ev) => {
       const msg = JSON.parse(ev.data)
+      // 事件（无 id 匹配）：页面侧异常与错误日志 → diagnostics
+      if (msg.method === "Runtime.exceptionThrown") {
+        const d = msg.params?.exceptionDetails
+        diagnostics.push("exception: " + String(d?.exception?.description || d?.text || "unknown").split("\n")[0])
+        return
+      }
+      if (msg.method === "Runtime.consoleAPICalled") {
+        const t = msg.params?.type
+        if (t === "error" || t === "warning") {
+          const txt = (msg.params.args || []).map((a) => a.value ?? a.description ?? "").join(" ")
+          diagnostics.push(`console.${t}: ${txt}`.slice(0, 300))
+        }
+        return
+      }
+      if (msg.method === "Log.entryAdded") {
+        const e = msg.params?.entry
+        if (e && (e.level === "error" || e.level === "warning")) diagnostics.push(`log.${e.level}: ${String(e.text)}`.slice(0, 300))
+        return
+      }
       const p = pending.get(msg.id)
       if (!p) return
       pending.delete(msg.id)
@@ -236,11 +273,14 @@ async function shoot(mode) {
       mode, t: tag,
       model: OPTS.modelName || "model", pmx: "/media/" + model,
       stage: OPTS.stage ? "/media/" + OPTS.stage : "",
+      stage2: OPTS.stage2 ? "/media/" + OPTS.stage2 : "",
       vmd: motion ? "/media/" + motion : "",
       w: String(width), h: String(height), fps: String(fps),
       seconds: String(OPTS.seconds || 8), warmup: String(OPTS.warmup ?? 45), start: String(OPTS.start || 0),
       distance: String(OPTS.distance ?? 36), alpha: String(OPTS.alpha ?? 0), beta: String(OPTS.beta ?? 0),
       bg: (OPTS.bg || "0.09,0.10,0.14"),
+      probe: OPTS.probe ? "1" : "",
+      postfx: JSON.stringify(OPTS.postfx || {}),
       distances: (OPTS.distances || []).join(","),
       alphas: (OPTS.alphas || []).join(","),
       betas: (OPTS.betas || []).join(","),
@@ -260,6 +300,14 @@ async function shoot(mode) {
       model2z: OPTS.model2z !== undefined ? String(OPTS.model2z) : "",
       model2ry: OPTS.model2ry !== undefined ? String(OPTS.model2ry) : "",
       model2scale: OPTS.model2scale !== undefined ? String(OPTS.model2scale) : "",
+      // 主模型根变换（与 extras 对称）
+      modelX: OPTS.modelX !== undefined ? String(OPTS.modelX) : "",
+      modelY: OPTS.modelY !== undefined ? String(OPTS.modelY) : "",
+      modelZ: OPTS.modelZ !== undefined ? String(OPTS.modelZ) : "",
+      modelRy: OPTS.modelRy !== undefined ? String(OPTS.modelRy) : "",
+      modelScale: OPTS.modelScale !== undefined ? String(OPTS.modelScale) : "",
+      // 通用附加角色（N 个）：opts.extras = [{pmx, vmd?, x?, y?, z?, ry?, scale?}, …]
+      extras: JSON.stringify((OPTS.extras || []).map((e) => ({ ...e, pmx: e.pmx ? "/media/" + e.pmx : "", vmd: e.vmd ? "/media/" + e.vmd : "" }))),
     })
     const pageUrl = `http://127.0.0.1:${srv.port}/?${q.toString()}`
     const target = await newTarget(cdpPort, pageUrl)
@@ -267,13 +315,35 @@ async function shoot(mode) {
 
     const page = await connect(target.webSocketDebuggerUrl)
     const budgetMs = Math.max(60000, (OPTS.seconds || 8) * fps * 1200)
+    const bootDeadline = Date.now() + 25000   // 页面启动窗口：过了还没 __reze ⇒ 模块没跑起来
     const tWait = Date.now()
     let st = null
+    let booted = false
+    let evalFails = 0
     while (Date.now() - tWait < budgetMs) {
-      const v = await page.evaluate(`(() => { const s = window.__reze; return s ? { phase: s.phase, t: s.t, frames: s.frames, total: s.total, error: s.error || null, log: s.log.slice(-4) } : null })()`)
+      let v = null
+      try {
+        v = await page.evaluate(`(() => { const s = window.__reze; return s ? { phase: s.phase, t: s.t, frames: s.frames, total: s.total, error: s.error || null, log: s.log.slice(-4) } : null })()`)
+      } catch (e) {
+        evalFails++
+        if (evalFails >= 3) {
+          const diag = page.diagnostics()
+          page.close()
+          return fail("page-unresponsive", { detail: "页面连续 3 次无响应：" + String(e?.message || e), diagnostics: diag, framesOnDisk: srv.state.frames })
+        }
+      }
       if (v && v.t === tag) {
+        booted = true
         st = v
         if (v.phase === "done" || v.phase === "error") break
+      } else if (!booted && Date.now() > bootDeadline) {
+        const diag = page.diagnostics()
+        page.close()
+        return fail("page-not-booted", {
+          detail: "25 秒内 window.__reze 未出现（模块语法错误 / import 失败？）",
+          diagnostics: diag,
+          framesOnDisk: srv.state.frames,
+        })
       }
       await new Promise((r) => setTimeout(r, 700))
     }
@@ -293,7 +363,7 @@ async function shoot(mode) {
       return finish({
         ok: true, mode, runDir, shots,
         count: shots.length, distinctSizes: new Set(shots.map((s) => s.bytes)).size,
-        elapsedMs: Date.now() - t0, pageLog: srv.state.log.slice(-6),
+        elapsedMs: Date.now() - t0, pageLog: srv.state.log.slice(-40),
       })
     }
 
@@ -331,7 +401,7 @@ async function shoot(mode) {
       width: s0.width, height: s0.height, duration, fps: s0.r_frame_rate, codec: s0.codec_name,
       bytes, frameVariety: Number(variety.toFixed(3)), distinctFrames: distinct,
       elapsedMs: Date.now() - t0,
-      pageLog: srv.state.log.slice(-6),
+      pageLog: srv.state.log.slice(-40),
       checks: { durationMatches: okDuration, moving: variety > 0.5, nonTrivialSize: bytes > 10000 },
     }, pass ? 0 : 1)
   } finally {
