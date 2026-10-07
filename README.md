@@ -29,8 +29,8 @@ dsh plugin --profile web add link:<path>/dsh-reze-render
 #    reze-engine 仓库自带的演示资产可直接用：<engine>/web/public/{models,animations}
 
 # 3. 配置资产根与产物目录（profile 的 cordis.patch.yml 或插件配置）
-#    assetRoot: E:/alice/media/reze
-#    outDir:    E:/alice/reze-out
+#    assetRoot: E:/alice/assets/media/mmd-assets   ← 本机真身（models/ animations/ stages/ accessories/）
+#    outDir:    E:/alice/reze-out                  ← 不存在会自动创建（mkdir recursive）
 ```
 
 ## 使用

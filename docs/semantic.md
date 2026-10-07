@@ -2,13 +2,14 @@
 
 > 版本 v0.1.0 · 2026-09-18 · 作者：爱丽丝 · 状态：**已实现**
 > 开发方式：语义文档优先（先写清「是什么/什么关系/怎么裁决」，再让实现逼近，最后用实践回修）
+>
+> ⚠ **待复核（D3 存量，2026-10-08 显式记账）**：`0630f46`（2026-10-02）给工具面补了 `postfx` / `extras` / `stage2` / `camTarget*` / `camVmd` 并订正了 `frameVariety` 描述，**尚未回写到本文件的 §4.1 工具表与 §7 验收行**。下次动本插件时补齐——在此之前不要据本文档声称「工具面已完整」。写这条是因为 D3 的判据是**提交时间**：把文档与实现放进同一个提交会让它**静默消警**，而内容其实没对上账——**不用时间戳盖住没做的复核**。
 
 ---
 
 ## 1 · 定位与反定位
 
-**定位**：把「用 reze-engine 离线出一段 MMD 视频」从一个**临时脚本**变成一个**可反复调用的插件工具**。
-输入是一个意图（用哪个模型、哪段动作、多长、多大、什么机位），输出是一个**带判据读数的成品视频**——不是"跑完了"，是"帧数/时长/分辨率/帧间变化都对得上"。
+**定位**：把「用 reze-engine 离线出一段 MMD 视频」从一个**临时脚本**变成一个**可反复调用的插件工具**。 输入是一个意图（用哪个模型、哪段动作、多长、多大、什么机位），输出是一个**带判据读数的成品视频**——不是"跑完了"，是"帧数/时长/分辨率/帧间变化都对得上"。
 
 **反定位（本插件不管什么）**：
 - 不做**在线预览**（不提供 Web UI 播放器）——出片是离线批处理
@@ -113,6 +114,7 @@ node assets/runner.mjs render  --spec '<json>'
 | A10 | 传 `stage` 时舞台真的进入画面（不是被静默忽略） | 同机位同模型：无 stage 产物 83,261 B / 有 stage 产物 1,015,705 B（**12.2×**，肉眼见霓虹砖墙+地面）；`pageLog` 记 `stage loaded: …` | 已实测 |
 | A11 | `stage` 载入失败**不致命**（fail-soft，角色照常出片） | 代码路径：`try/catch` 只记 `pageLog`，不抛；不传 `stage` 时行为与增强前**逐字节同构**（A3–A6 回归通过） | 已实测（异常分支待真实坏舞台样本触发） |
 | A12 | 加了 `stage` 后**旧调用不受影响**（向后兼容） | 不传 `stage` ⇒ query 里 `stage=""` ⇒ `if (STAGE)` 为假 ⇒ 与 0.1.0 路径一致；端到端 1080p/12s/360 帧验收通过 | 已实测 |
+| A13 | 资产根**不可读**时给出**可读失败**（`assetRoot:""` 且 `missing` 含 `assetRoot`），而**不是**撞 output schema 报「输出契约错」 | runner 层尸体样本（assetRoot 指向不存在目录）⇒ `{"assetRoot":"","missing":["chrome","ffmpeg","assetRoot"]}` · exit=0；空串 ∈ string ⇒ schema 由构造满足；金标准（真身）⇒ `assetRoot` 命中 · models 278 · motions 37。复算见 §9 2026-10-08 条的命令 | 已实测 |
 
 > 端到端读数（2026-09-18 21:5x，插件挂载后经工具调用）：`reze_status` ready=true · `reze_preview`（sheet 两机位）5.0s · `reze_render` 1280×720 / 3s / 90 帧 → 帧间变化 1.0、产物 257,687 字节、用时 11.3s。
 >
@@ -127,6 +129,14 @@ node assets/runner.mjs render  --spec '<json>'
 - 未实现/未验证部分**显式标注**：① 4K 出片未实测（只测 1080p）② 声音轨未支持（VMD 无音频；要配乐需另加 ffmpeg 混流）③ **单舞台**——只支持一个额外的具名槽位 `stage`（多道具/多角色同场仍未支持）
 
 ## 9 · 实践修订记录
+
+- **2026-10-08 实践回修（配置锚点腐化 + 失败面契约）**：`reze_status` 一直报「输出契约错」（`value.assetRoot must be a string`），且所有出片路径都会 `fail("asset-missing")`——两个原因叠在一起：
+  - **配置锚点腐化**：profile 里 `assetRoot: E:/alice/media/mmd-assets`，而资产随目录治理搬到了 `E:/alice/assets/media/mmd-assets`（**少一段 `assets/`**）。runner L88 `exists(conf.assetRoot)` 失败 ⇒ assetRoot 塌成空 ⇒ 全链只读空表。**同族第三例**（前两例：skill-forge 的 `mirrorCheckScript`、preset-ops 的 `presetDir`）⇒ 已建通用扫描器 `scripts/check-config-paths.py`。
+  - **语义被补充（失败面也是契约）**：runner 曾返回 `assetRoot: assetRoot || null`，而工具 output schema 声明它是 `string` ⇒ **整条读数被 schema 拦掉**，用户看到的是「输出契约错」，而不是「资产根不可读」这个真正的诊断。已修为 `|| ""`，与 render 里既有的「（未配置）」分支对齐——**两处对同一个值的假设必须一致**（AGENTS.md §5.30 规则 2：显式先于隐式）。
+  - 实测读数：尸体样本（assetRoot 指向不存在目录）⇒ `{"assetRoot":"","missing":["chrome","ffmpeg","assetRoot"]}` · exit=0；金标准（真身）⇒ `assetRoot` 命中 · **models 278 · motions 37**。
+  - 复算命令（§4.2 内部契约，WSL 侧可直接跑；**路径用 `/mnt/e/...` 形态**）：
+    `node assets/runner.mjs status --spec '{"config":{"assetRoot":"<路径>"},"opts":{}}'`
+  - ⚠ 未验证部分：本机 Windows 侧的 `chrome`/`ffmpeg` 就绪与端到端出片**本次未复验**（WSL 侧本就无这两件，`ready=false` 属预期）。
 
 - **2026-09-19 实践回修（v0.1.1 · 新增 `stage`）**：出片时发现**库里的舞台资产无从使用**——引擎 `loadModel(name, path)` 本就接受**具名槽位**，但插件只载一个模型，于是 123 个舞台（背景）全是死资产，出片永远是纯色背景。
   - 语义**被补充**：`stage` = **第二个具名槽位**，静态载入（不挂动作），与角色同场；**载入失败 fail-soft**（照出角色，把原因写进 `pageLog`）——因为「没有背景」远比「没有片子」轻。

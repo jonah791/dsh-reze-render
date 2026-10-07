@@ -96,7 +96,10 @@ async function status() {
     ffmpeg: ff.code === 0 ? (ff.out.split("\n")[0] || conf.ffmpegPath).trim() : null,
     ffprobe: fp.code === 0,
     bundle: bundle ? BUNDLE : null,
-    assetRoot: assetRoot || null,
+    // 2026-10-08 修：曾返回 `null`，而工具 output schema 声明 assetRoot 为 string
+    // ⇒ 整条读数被 schema 拦掉，用户只看到「输出契约错」，看不到「资产根不可读」这个
+    // 真正的诊断。用空串与 render 里的「（未配置）」分支对齐（两处对同一个值的假设必须一致）。
+    assetRoot: assetRoot || "",
     models, motions,
     missing: [!chrome && "chrome", ff.code !== 0 && "ffmpeg", !bundle && "engine-bundle", !assetRoot && "assetRoot"].filter(Boolean),
   })
