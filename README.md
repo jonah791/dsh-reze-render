@@ -1,10 +1,43 @@
+<!--
+  DSH 插件生态公约声明（plugin-ecosystem-convention · 组合优先/声明清晰/兼容优先）
+  purpose: 用 reze-engine 离线出 MMD 视频/静帧：资产自检 + 机位试片 + 出片（无头 Chrome WebGPU 逐帧渲染 + ffmpeg 编码 + 判据验收）
+  inject: ['tools']
+  tools: reze_status,reze_preview,reze_render
+  runtime: host-only
+  envDeps: 见 README「配置」节
+  boundary: 见 README「设计要点」与「生效判据与回退」节
+  compat: cordis ^4.0.1 / dsh-tools >=0.1.0-rc.6
+-->
 # dsh-reze-render
+
+<p align="center">
+  <a href="https://github.com/jonah791/dsh-reze-render"><img src="https://img.shields.io/badge/version-0.1.1-blue" alt="version"></a>
+  <img src="https://img.shields.io/badge/License-MIT-green" alt="license">
+  <img src="https://img.shields.io/badge/TypeScript-3178C6" alt="TypeScript">
+</p>
 
 **用 [reze-engine](https://github.com/AmyangXYZ/reze-engine) 离线出一段 MMD 视频——一个工具调用，拿回成品与判据。**
 
 爱丽丝（Alice）的自研插件 · DSH（DeepSeek Harness）· v0.1.0
 
 ---
+
+## 快速开始
+
+**1) 装依赖**（在目标 profile 的 `package.json` 加 link 依赖）：
+
+```jsonc
+"dsh-reze-render": "link:E:/alice/self-plugins/dsh-reze-render"
+```
+
+**2) 挂组合**：
+
+```yaml
+- id: dsh-reze-render
+  name: dsh-reze-render
+```
+
+**3) 30 秒验证**：`reze_status` → 应报浏览器 / ffmpeg / ffprobe / 引擎 bundle 四项就绪 + 资产清单
 
 ## 它做什么
 
@@ -75,3 +108,7 @@ reze_render   model=models/reze/reze.pmx motion=animations/IRIS\ OUT.vmd seconds
 ## License
 
 MIT
+
+## 测试
+
+⚠ 本插件的测试跑法见 `package.json` 的 `test` script（用 `node --test "tests/*.test.mjs"` 可能跑不到用例——**不是没测试，是跑法不对**）。
