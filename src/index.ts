@@ -17,6 +17,8 @@ import { spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { buildRunnerSpec, failText, parseRunnerOutput, renderTimeoutMs } from './pure.ts'
+import type { RunnerResult } from './pure.ts'
 
 export const name = 'reze-render'
 export const inject = ['tools'] as const
@@ -44,12 +46,6 @@ const HERE = dirname(fileURLToPath(import.meta.url))          // <plugin>/lib
 const PLUGIN_ROOT = join(HERE, '..')
 const RUNNER = join(PLUGIN_ROOT, 'assets', 'runner.mjs')
 
-interface RunnerResult {
-  ok: boolean
-  error?: string
-  [k: string]: unknown
-}
-
 /** 调 runner（子进程），解析它 stdout 最后一行 JSON。 */
 function runRunner(
   ctx: Context,
@@ -58,16 +54,7 @@ function runRunner(
   cfg: Config,
   timeoutMs: number,
 ): Promise<RunnerResult> {
-  const spec = JSON.stringify({
-    config: {
-      assetRoot: cfg.assetRoot ?? '',
-      outDir: cfg.outDir ?? '',
-      chromePath: cfg.chromePath ?? undefined,
-      ffmpegPath: cfg.ffmpegPath ?? undefined,
-      ffprobePath: cfg.ffprobePath ?? undefined,
-    },
-    opts,
-  })
+  const spec = buildRunnerSpec(cfg, opts)
   return new Promise((resolve) => {
     if (!existsSync(RUNNER)) {
       resolve({ ok: false, error: 'runner-missing', detail: RUNNER })
@@ -88,18 +75,13 @@ function runRunner(
     child.on('error', (e) => { clearTimeout(timer); resolve({ ok: false, error: 'spawn', detail: String(e) }) })
     child.on('close', () => {
       clearTimeout(timer)
-      const line = out.trim().split('\n').filter(Boolean).pop() ?? ''
-      try {
-        resolve(JSON.parse(line) as RunnerResult)
-      } catch {
-        resolve({ ok: false, error: 'runner-output', detail: line.slice(0, 400) || '(空)', stderr: err.slice(-800) })
-      }
+      resolve(parseRunnerOutput(out, err))
     })
     ctx.logger('reze-render').debug(`runner ${mode} 启动（timeout=${timeoutMs}ms）`)
   })
 }
 
-const failText = (v: any) => `失败：${String(v.error ?? '')}${v.detail ? ' · ' + String(v.detail) : ''}`
+
 
 export function apply(ctx: Context, config: Config): void {
   const log = ctx.logger('reze-render')
@@ -371,7 +353,7 @@ export function apply(ctx: Context, config: Config): void {
         postfx: args.postfx,
         probe: args.probe,
       }
-      return await runRunner(ctx, 'render', opts, config, Math.max(180_000, seconds * fps * 3000))
+      return await runRunner(ctx, 'render', opts, config, renderTimeoutMs(seconds, fps))
     },
   }))
 
