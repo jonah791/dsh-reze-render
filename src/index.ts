@@ -89,6 +89,7 @@ export function apply(ctx: Context, config: Config): void {
   // ───────────────────────── reze_status ─────────────────────────
   ctx.tools.register(defineTool({
     name: 'reze_status',
+    deferLoading: true,
     description:
       'reze 出片台自检：这台机器现在能不能出片、手里有哪些料。' +
       '返回浏览器/ffmpeg/ffprobe/引擎 bundle 四项就绪状态 + 资产根里的模型（.pmx）与动作（.vmd）清单。' +
@@ -139,6 +140,7 @@ export function apply(ctx: Context, config: Config): void {
   // ───────────────────────── reze_preview ─────────────────────────
   ctx.tools.register(defineTool({
     name: 'reze_preview',
+    deferLoading: true,
     description:
       '出静帧看机位：给模型+动作出一张（或多张候选）PNG，用来定机位与光照——**出片前必须先看一帧**，别等视频出来才发现机位不对。' +
       '传 distances（数组）即一次出多张候选（多机位试片）；返回每张的文件路径与字节数（**不返回像素**，看图用 read_image）。',
@@ -207,6 +209,7 @@ export function apply(ctx: Context, config: Config): void {
   // ───────────────────────── reze_render ─────────────────────────
   ctx.tools.register(defineTool({
     name: 'reze_render',
+    deferLoading: true,
     description:
       '出 MMD 视频：reze-engine 在无头浏览器里按固定步长逐帧渲染（确定性离线导出），ffmpeg 编码，' +
       '返回**现算的判据读数**：帧数/期望帧数/分辨率/时长/编码/字节数/去重帧数。' +
